@@ -1,0 +1,33 @@
+# --- OS / éditeurs
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# --- Secrets : ne JAMAIS commiter
+.env
+.env.*
+*.pem
+
+# --- Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# --- Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# .terraform.lock.hcl DOIT être commité (versions des providers figées)
+
+# --- Données importées depuis PokéAPI (jamais versionnées, cf. ADR-0006)
+/data/raw/
