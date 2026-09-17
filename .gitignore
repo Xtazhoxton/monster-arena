@@ -31,3 +31,7 @@ override.tf.json
 
 # --- Données importées depuis PokéAPI (jamais versionnées, cf. ADR-0006)
 /data/raw/
+
+# --- Variables Terraform locales (peuvent contenir des infos perso) ; seul l'exemple est versionné
+*.tfvars
+!*.tfvars.example
