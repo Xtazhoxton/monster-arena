@@ -1,5 +1,7 @@
 locals {
-  github_repo = "Xtazhoxton/monster-arena"
+  # Immutable subject format (GitHub default): account id and repo id, stable across renames.
+  # Source: gh api repos/Xtazhoxton/monster-arena/actions/oidc/customization/sub
+  github_repo = "Xtazhoxton@130063832/monster-arena@1372827338"
   github_sub = {
     pull_request = "repo:${local.github_repo}:pull_request"
     main         = "repo:${local.github_repo}:ref:refs/heads/main"
