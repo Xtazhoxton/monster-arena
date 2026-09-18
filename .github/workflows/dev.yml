@@ -1,0 +1,70 @@
+name: dev
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # required to request the OIDC token exchanged for AWS credentials
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_DIR: infra/envs/dev
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make test
+
+  terraform:
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.event_name == 'push' && 'dev-apply' || format('dev-plan-{0}', github.ref) }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build Lambda binaries
+        run: make build
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.2
+          terraform_wrapper: false
+      - name: Assume AWS role 'plan on PR, apply on main'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ github.event_name == 'push' && vars.AWS_APPLY_ROLE_ARN || vars.AWS_PLAN_ROLE_ARN }}
+      - name: Terraform format
+        run: terraform fmt -check -recursive infra
+      - name: Terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -input=false
+      - name: Terraform validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate
+      - name: Terraform plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform plan -input=false -lock-timeout=5m -out=tfplan
+          {
+            echo '### Terraform plan (dev)'
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Terraform apply
+        if: github.event_name == 'push'
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -input=false -lock-timeout=5m tfplan
