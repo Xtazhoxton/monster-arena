@@ -194,16 +194,16 @@ const (
 	maxPageSize     = 100
 )
 
-// ListCreatures returns one page of creature profiles, movepools excluded.
-// An empty NextCursor means the last page was reached.
-func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (CreaturePage, error) {
+// queryCreaturePage runs one page of a query on the inverted index for the given sort
+// key, and returns the raw items with the token of the next page.
+func (s *Store) queryCreaturePage(ctx context.Context, sk string, limit int32, token string) ([]map[string]types.AttributeValue, string, error) {
 	if limit <= 0 || limit > maxPageSize {
 		limit = defaultPageSize
 	}
 
 	start, err := decodeCursor(token)
 	if err != nil {
-		return CreaturePage{}, err
+		return nil, "", err
 	}
 
 	out, err := s.client.Query(ctx, &dynamodb.QueryInput{
@@ -211,18 +211,33 @@ func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (C
 		IndexName:              aws.String(indexInverted),
 		KeyConditionExpression: aws.String("SK = :sk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":sk": &types.AttributeValueMemberS{Value: creatureEntity},
+			":sk": &types.AttributeValueMemberS{Value: sk},
 		},
 		Limit:             aws.Int32(limit),
 		ExclusiveStartKey: start,
 	})
 	if err != nil {
-		return CreaturePage{}, fmt.Errorf("list creatures: %w", err)
+		return nil, "", fmt.Errorf("query index on %q: %w", sk, err)
 	}
 
-	page := CreaturePage{Creatures: make([]catalog.Creature, 0, len(out.Items))}
+	next, err := encodeCursor(out.LastEvaluatedKey)
+	if err != nil {
+		return nil, "", err
+	}
 
-	for _, raw := range out.Items {
+	return out.Items, next, nil
+}
+
+// ListCreatures returns one page of creature profiles, movepools excluded.
+// An empty NextCursor means the last page was reached.
+func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (CreaturePage, error) {
+	items, next, err := s.queryCreaturePage(ctx, creatureEntity, limit, token)
+	if err != nil {
+		return CreaturePage{}, err
+	}
+
+	creatures := make([]catalog.Creature, 0, len(items))
+	for _, raw := range items {
 		var item creatureItem
 		if err := attributevalue.UnmarshalMap(raw, &item); err != nil {
 			return CreaturePage{}, fmt.Errorf("unmarshal creature: %w", err)
@@ -233,15 +248,10 @@ func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (C
 			return CreaturePage{}, err
 		}
 
-		page.Creatures = append(page.Creatures, c)
+		creatures = append(creatures, c)
 	}
 
-	page.NextCursor, err = encodeCursor(out.LastEvaluatedKey)
-	if err != nil {
-		return CreaturePage{}, err
-	}
-
-	return page, nil
+	return CreaturePage{Creatures: creatures, NextCursor: next}, nil
 }
 
 // batchGetCreatures reads the profiles behind keys and returns them in order of keys.
@@ -307,31 +317,14 @@ func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit in
 		return CreaturePage{}, fmt.Errorf("%w: type %q must be a slug", catalog.ErrInvalid, typeID)
 	}
 
-	if limit <= 0 || limit > maxPageSize {
-		limit = defaultPageSize
-	}
-
-	start, err := decodeCursor(token)
+	items, next, err := s.queryCreaturePage(ctx, creatureTypeSK(typeID), limit, token)
 	if err != nil {
 		return CreaturePage{}, err
 	}
 
-	out, err := s.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(s.table),
-		IndexName:              aws.String(indexInverted),
-		KeyConditionExpression: aws.String("SK = :sk"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":sk": &types.AttributeValueMemberS{Value: creatureTypeSK(typeID)},
-		},
-		Limit:             aws.Int32(limit),
-		ExclusiveStartKey: start,
-	})
-	if err != nil {
-		return CreaturePage{}, fmt.Errorf("list creatures of type %q: %w", typeID, err)
-	}
-
-	keys := make([]map[string]types.AttributeValue, 0, len(out.Items))
-	for _, raw := range out.Items {
+	// The index yields link items, which carry keys only: the profiles are read after.
+	keys := make([]map[string]types.AttributeValue, 0, len(items))
+	for _, raw := range items {
 		pk, ok := raw["PK"].(*types.AttributeValueMemberS)
 		if !ok {
 			return CreaturePage{}, fmt.Errorf("type %q: link item without a string PK", typeID)
@@ -342,12 +335,8 @@ func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit in
 			"SK": &types.AttributeValueMemberS{Value: creatureEntity},
 		})
 	}
-	creatures, err := s.batchGetCreatures(ctx, keys)
-	if err != nil {
-		return CreaturePage{}, err
-	}
 
-	next, err := encodeCursor(out.LastEvaluatedKey)
+	creatures, err := s.batchGetCreatures(ctx, keys)
 	if err != nil {
 		return CreaturePage{}, err
 	}
