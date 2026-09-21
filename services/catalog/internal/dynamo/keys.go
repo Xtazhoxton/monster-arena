@@ -11,6 +11,7 @@ const (
 	moveEntity     = "MOVE"
 	typeEntity     = "TYPE"
 	versusEntity   = "VS"
+	indexInverted  = "GSI1"
 )
 
 // creaturePK returns the partition holding a creature and everything attached to it.

@@ -38,7 +38,7 @@ type Creature struct {
 func (c Creature) Validate() error {
 	var errs []error
 
-	if !isSlug(c.ID) {
+	if !IsSlug(c.ID) {
 		errs = append(errs, fmt.Errorf("%w: id %q must be a slug", ErrInvalid, c.ID))
 	}
 	if c.Name == "" {
@@ -51,12 +51,12 @@ func (c Creature) Validate() error {
 		errs = append(errs, fmt.Errorf("%w: duplicate type %q", ErrInvalid, c.Types[0]))
 	}
 	for _, t := range c.Types {
-		if !isSlug(t) {
+		if !IsSlug(t) {
 			errs = append(errs, fmt.Errorf("%w: type %q must be a slug", ErrInvalid, t))
 		}
 	}
 	for _, m := range c.Moves {
-		if !isSlug(m.MoveID) {
+		if !IsSlug(m.MoveID) {
 			errs = append(errs, fmt.Errorf("%w: move %q must be a slug", ErrInvalid, m.MoveID))
 		}
 	}
