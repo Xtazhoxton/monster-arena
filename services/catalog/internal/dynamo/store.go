@@ -18,11 +18,6 @@ type Store struct {
 	table  string
 }
 
-type CreaturePage struct {
-	Creatures  []catalog.Creature
-	NextCursor string
-}
-
 // maxBatchAttempts bounds the retry loop on unprocessed keys.
 const maxBatchAttempts = 5
 
@@ -230,28 +225,28 @@ func (s *Store) queryCreaturePage(ctx context.Context, sk string, limit int32, t
 
 // ListCreatures returns one page of creature profiles, movepools excluded.
 // An empty NextCursor means the last page was reached.
-func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (CreaturePage, error) {
+func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error) {
 	items, next, err := s.queryCreaturePage(ctx, creatureEntity, limit, token)
 	if err != nil {
-		return CreaturePage{}, err
+		return catalog.CreaturePage{}, err
 	}
 
 	creatures := make([]catalog.Creature, 0, len(items))
 	for _, raw := range items {
 		var item creatureItem
 		if err := attributevalue.UnmarshalMap(raw, &item); err != nil {
-			return CreaturePage{}, fmt.Errorf("unmarshal creature: %w", err)
+			return catalog.CreaturePage{}, fmt.Errorf("unmarshal creature: %w", err)
 		}
 
 		c, err := item.creature()
 		if err != nil {
-			return CreaturePage{}, err
+			return catalog.CreaturePage{}, err
 		}
 
 		creatures = append(creatures, c)
 	}
 
-	return CreaturePage{Creatures: creatures, NextCursor: next}, nil
+	return catalog.CreaturePage{Creatures: creatures, NextCursor: next}, nil
 }
 
 // batchGetCreatures reads the profiles behind keys and returns them in order of keys.
@@ -312,14 +307,14 @@ func (s *Store) batchGetCreatures(ctx context.Context, keys []map[string]types.A
 }
 
 // ListCreaturesByType returns one page of the creatures having the given type.
-func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit int32, token string) (CreaturePage, error) {
+func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit int32, token string) (catalog.CreaturePage, error) {
 	if !catalog.IsSlug(typeID) {
-		return CreaturePage{}, fmt.Errorf("%w: type %q must be a slug", catalog.ErrInvalid, typeID)
+		return catalog.CreaturePage{}, fmt.Errorf("%w: type %q must be a slug", catalog.ErrInvalid, typeID)
 	}
 
 	items, next, err := s.queryCreaturePage(ctx, creatureTypeSK(typeID), limit, token)
 	if err != nil {
-		return CreaturePage{}, err
+		return catalog.CreaturePage{}, err
 	}
 
 	// The index yields link items, which carry keys only: the profiles are read after.
@@ -327,7 +322,7 @@ func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit in
 	for _, raw := range items {
 		pk, ok := raw["PK"].(*types.AttributeValueMemberS)
 		if !ok {
-			return CreaturePage{}, fmt.Errorf("type %q: link item without a string PK", typeID)
+			return catalog.CreaturePage{}, fmt.Errorf("type %q: link item without a string PK", typeID)
 		}
 
 		keys = append(keys, map[string]types.AttributeValue{
@@ -338,8 +333,8 @@ func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit in
 
 	creatures, err := s.batchGetCreatures(ctx, keys)
 	if err != nil {
-		return CreaturePage{}, err
+		return catalog.CreaturePage{}, err
 	}
 
-	return CreaturePage{Creatures: creatures, NextCursor: next}, nil
+	return catalog.CreaturePage{Creatures: creatures, NextCursor: next}, nil
 }

@@ -34,6 +34,14 @@ type Creature struct {
 	Moves      []LearnedMove `json:"moves,omitempty"`
 }
 
+// CreaturePage is one page of a creature listing: the creatures themselves,
+// and the cursor to pass back to obtain the next page.
+// An empty NextCursor means the last page was reached.
+type CreaturePage struct {
+	Creatures  []Creature `json:"creatures"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+}
+
 // Validate reports every reason the creature cannot be stored, or nil if it can.
 func (c Creature) Validate() error {
 	var errs []error
