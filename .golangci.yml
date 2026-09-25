@@ -1,0 +1,11 @@
+version: "2"
+
+# Jeu de linters par défaut : errcheck, govet, ineffassign, staticcheck, unused.
+# Délibérément aucun linter de style en plus : on veut les vrais problèmes
+# (erreurs ignorées, code mort, simplifications), pas des débats de mise en forme.
+linters:
+  default: standard
+
+formatters:
+  enable:
+    - gofmt

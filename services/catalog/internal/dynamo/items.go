@@ -29,9 +29,8 @@ type creatureItem struct {
 
 // creatureTypeItem links a creature to one of its types: SK = TYPE#<id>.
 type creatureTypeItem struct {
-	PK   string `dynamodbav:"PK"`
-	SK   string `dynamodbav:"SK"`
-	Slot int    `dynamodbav:"slot"`
+	PK string `dynamodbav:"PK"`
+	SK string `dynamodbav:"SK"`
 }
 
 // creatureMoveItem is one movepool entry: SK = MOVE#<id>.
@@ -73,11 +72,10 @@ func (i creatureItem) creature() (catalog.Creature, error) {
 // newCreatureTypeItems builds the link items for the types of c, in declaration order.
 func newCreatureTypeItems(c catalog.Creature) []creatureTypeItem {
 	items := make([]creatureTypeItem, 0, len(c.Types))
-	for slot, typeID := range c.Types {
+	for _, typeID := range c.Types {
 		items = append(items, creatureTypeItem{
-			PK:   creaturePK(c.ID),
-			SK:   creatureTypeSK(typeID),
-			Slot: slot + 1,
+			PK: creaturePK(c.ID),
+			SK: creatureTypeSK(typeID),
 		})
 	}
 
