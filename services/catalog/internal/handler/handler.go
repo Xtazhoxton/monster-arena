@@ -17,7 +17,7 @@ import (
 	"github.com/Xtazhoxton/monster-arena/services/catalog/internal/catalog"
 )
 
-// creatureStore is the slice of the repository the handlers actually need.
+// creatureStore is the slice of the repository the creature routes need.
 type creatureStore interface {
 	GetCreature(ctx context.Context, id string) (catalog.Creature, bool, error)
 	ListCreatures(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error)
@@ -25,14 +25,33 @@ type creatureStore interface {
 	PutCreature(ctx context.Context, c catalog.Creature) error
 }
 
-// Handler serves the creature routes of the catalog.
+// moveStore is the slice of the repository the move routes need.
+type moveStore interface {
+	GetMove(ctx context.Context, id string) (catalog.Move, bool, error)
+	ListMoves(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
+}
+
+// typeStore is the slice of the repository the type routes need.
+type typeStore interface {
+	GetType(ctx context.Context, id string) (catalog.Type, bool, error)
+	ListTypes(ctx context.Context, limit int32, token string) (catalog.TypePage, error)
+}
+
+// catalogStore is everything the handler needs, whoever provides it.
+type catalogStore interface {
+	creatureStore
+	moveStore
+	typeStore
+}
+
+// Handler serves the catalog routes.
 type Handler struct {
-	store  creatureStore
+	store  catalogStore
 	logger *slog.Logger
 }
 
 // New returns a Handler reading and writing through store, logging with logger.
-func New(store creatureStore, logger *slog.Logger) *Handler {
+func New(store catalogStore, logger *slog.Logger) *Handler {
 	return &Handler{store: store, logger: logger}
 }
 
@@ -49,6 +68,38 @@ func (h *Handler) getCreature(ctx context.Context, req events.APIGatewayV2HTTPRe
 	}
 
 	return h.writeJSON(ctx, http.StatusOK, creature)
+}
+
+// getMove serves GET /moves/{id}.
+func (h *Handler) getMove(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	id := req.PathParameters["id"]
+
+	move, found, err := h.store.GetMove(ctx, id)
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if !found {
+		return h.writeError(ctx, http.StatusNotFound, "move not found")
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, move)
+}
+
+// getType serves GET /types/{id}.
+func (h *Handler) getType(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	id := req.PathParameters["id"]
+
+	elementalType, found, err := h.store.GetType(ctx, id)
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if !found {
+		return h.writeError(ctx, http.StatusNotFound, "type not found")
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, elementalType)
 }
 
 // maxLimit is the largest page this API serves. It matches the 100-item ceiling of a
@@ -93,6 +144,44 @@ func (h *Handler) listCreatures(ctx context.Context, req events.APIGatewayV2HTTP
 	if page.Creatures == nil {
 		page.Creatures = []catalog.Creature{}
 	}
+	return h.writeJSON(ctx, http.StatusOK, page)
+}
+
+// listMoves serves GET /moves.
+func (h *Handler) listMoves(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	limit, err := parseLimit(req.QueryStringParameters["limit"])
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+
+	page, err := h.store.ListMoves(ctx, limit, req.QueryStringParameters["cursor"])
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if page.Moves == nil {
+		page.Moves = []catalog.Move{}
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, page)
+}
+
+// listTypes serves GET /types.
+func (h *Handler) listTypes(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	limit, err := parseLimit(req.QueryStringParameters["limit"])
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+
+	page, err := h.store.ListTypes(ctx, limit, req.QueryStringParameters["cursor"])
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if page.Types == nil {
+		page.Types = []catalog.Type{}
+	}
+
 	return h.writeJSON(ctx, http.StatusOK, page)
 }
 
@@ -150,6 +239,18 @@ func (h *Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest
 
 	case "PUT /creatures/{id}":
 		return h.putCreature(ctx, req), nil
+
+	case "GET /moves/{id}":
+		return h.getMove(ctx, req), nil
+
+	case "GET /moves":
+		return h.listMoves(ctx, req), nil
+
+	case "GET /types/{id}":
+		return h.getType(ctx, req), nil
+
+	case "GET /types":
+		return h.listTypes(ctx, req), nil
 
 	default:
 		h.logger.ErrorContext(ctx, "unrouted request", slog.String("route_key", req.RouteKey))

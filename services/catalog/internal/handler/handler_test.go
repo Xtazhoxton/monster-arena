@@ -15,7 +15,7 @@ import (
 	"github.com/Xtazhoxton/monster-arena/services/catalog/internal/catalog"
 )
 
-// fakeStore satisfies creatureStore with behaviour injected per test. Each field is the
+// fakeStore satisfies catalogStore with behaviour injected per test. Each field is the
 // function its method delegates to; a test only sets the one it expects to be called, so
 // an unexpected call panics on a nil field and names the method that was not wanted.
 type fakeStore struct {
@@ -23,6 +23,10 @@ type fakeStore struct {
 	listCreatures       func(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error)
 	listCreaturesByType func(ctx context.Context, typeID string, limit int32, token string) (catalog.CreaturePage, error)
 	putCreature         func(ctx context.Context, c catalog.Creature) error
+	getMove             func(ctx context.Context, id string) (catalog.Move, bool, error)
+	listMoves           func(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
+	getType             func(ctx context.Context, id string) (catalog.Type, bool, error)
+	listTypes           func(ctx context.Context, limit int32, token string) (catalog.TypePage, error)
 }
 
 func (f fakeStore) GetCreature(ctx context.Context, id string) (catalog.Creature, bool, error) {
@@ -41,8 +45,24 @@ func (f fakeStore) PutCreature(ctx context.Context, c catalog.Creature) error {
 	return f.putCreature(ctx, c)
 }
 
+func (f fakeStore) GetMove(ctx context.Context, id string) (catalog.Move, bool, error) {
+	return f.getMove(ctx, id)
+}
+
+func (f fakeStore) ListMoves(ctx context.Context, limit int32, token string) (catalog.MovePage, error) {
+	return f.listMoves(ctx, limit, token)
+}
+
+func (f fakeStore) GetType(ctx context.Context, id string) (catalog.Type, bool, error) {
+	return f.getType(ctx, id)
+}
+
+func (f fakeStore) ListTypes(ctx context.Context, limit int32, token string) (catalog.TypePage, error) {
+	return f.listTypes(ctx, limit, token)
+}
+
 // newTestHandler returns a Handler over store, logging nowhere.
-func newTestHandler(store creatureStore) *Handler {
+func newTestHandler(store catalogStore) *Handler {
 	return New(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -60,9 +80,36 @@ func pikachu() catalog.Creature {
 	}
 }
 
+// thunderbolt is the move the tests read.
+func thunderbolt() catalog.Move {
+	return catalog.Move{
+		ID:          "thunderbolt",
+		Name:        "Thunderbolt",
+		Type:        "electric",
+		DamageClass: catalog.Special,
+		Power:       90,
+		Accuracy:    100,
+		PP:          15,
+	}
+}
+
+// fire is the type the tests read.
+func fire() catalog.Type {
+	return catalog.Type{
+		ID:            "fire",
+		Name:          "Fire",
+		Effectiveness: map[string]float64{"grass": 2, "water": 0.5},
+	}
+}
+
 // The wire format is frozen literally: these strings are the API contract, and a change
 // to a JSON tag or to the field order must show up here as a failing test.
 const (
+	fireJSON = `{"id":"fire","name":"Fire","effectiveness":{"grass":2,"water":0.5}}`
+
+	thunderboltJSON = `{"id":"thunderbolt","name":"Thunderbolt","type":"electric",` +
+		`"damageClass":"special","power":90,"accuracy":100,"pp":15}`
+
 	pikachuJSON = `{"id":"pikachu","name":"Pikachu","generation":1,"types":["electric"],` +
 		`"baseStats":{"hp":35,"attack":55,"defense":40,"specialAttack":50,"specialDefense":50,"speed":90}}`
 
@@ -504,5 +551,418 @@ func TestHandlePutCreatureRejectsMalformedJSON(t *testing.T) {
 				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 			}
 		})
+	}
+}
+
+func TestHandleGetMove(t *testing.T) {
+	tests := []struct {
+		name       string
+		get        func(ctx context.Context, id string) (catalog.Move, bool, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "found",
+			get: func(context.Context, string) (catalog.Move, bool, error) {
+				return thunderbolt(), true, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   thunderboltJSON,
+		},
+		{
+			// A status move carries neither power nor accuracy, and both fields must still
+			// appear in the JSON: a client reading power would otherwise see it vanish.
+			name: "status move keeps its zero values",
+			get: func(context.Context, string) (catalog.Move, bool, error) {
+				m := thunderbolt()
+				m.ID, m.Name, m.Type = "growl", "Growl", "normal"
+				m.DamageClass, m.Power, m.Accuracy = catalog.Status, 0, 0
+
+				return m, true, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"id":"growl","name":"Growl","type":"normal","damageClass":"status","power":0,"accuracy":0,"pp":15}`,
+		},
+		{
+			name: "absent is not a failure",
+			get: func(context.Context, string) (catalog.Move, bool, error) {
+				return catalog.Move{}, false, nil
+			},
+			wantStatus: http.StatusNotFound,
+			wantBody:   `{"error":"move not found"}`,
+		},
+		{
+			name: "store failure stays internal",
+			get: func(context.Context, string) (catalog.Move, bool, error) {
+				return catalog.Move{}, false, errors.New("ResourceNotFoundException: table monster-arena-dev-catalog, account 533449297933")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal error"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(fakeStore{getMove: tt.get})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:       "GET /moves/{id}",
+				PathParameters: map[string]string{"id": "thunderbolt"},
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestHandleListMoves(t *testing.T) {
+	tests := []struct {
+		name       string
+		list       func(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "one page, last one",
+			list: func(context.Context, int32, string) (catalog.MovePage, error) {
+				return catalog.MovePage{Moves: []catalog.Move{thunderbolt()}}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"moves":[` + thunderboltJSON + `]}`,
+		},
+		{
+			name: "a cursor means there is more",
+			list: func(context.Context, int32, string) (catalog.MovePage, error) {
+				return catalog.MovePage{Moves: []catalog.Move{thunderbolt()}, NextCursor: "eyJwayI6Ik1PVkUifQ"}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"moves":[` + thunderboltJSON + `],"nextCursor":"eyJwayI6Ik1PVkUifQ"}`,
+		},
+		{
+			// A nil slice marshals to null, which breaks every client that loops.
+			name: "no move is an empty array, never null",
+			list: func(context.Context, int32, string) (catalog.MovePage, error) {
+				return catalog.MovePage{}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"moves":[]}`,
+		},
+		{
+			name: "an invalid cursor is the caller's fault",
+			list: func(context.Context, int32, string) (catalog.MovePage, error) {
+				return catalog.MovePage{}, fmt.Errorf("%w: cursor is not valid JSON", catalog.ErrInvalid)
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"invalid: cursor is not valid JSON"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(fakeStore{listMoves: tt.list})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey: "GET /moves",
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestHandleListMovesForwardsParameters checks that limit and cursor reach the store
+// unchanged: the cursor is opaque here, only the store knows how to read it.
+func TestHandleListMovesForwardsParameters(t *testing.T) {
+	var gotLimit int32
+	var gotToken string
+
+	h := newTestHandler(fakeStore{
+		listMoves: func(_ context.Context, limit int32, token string) (catalog.MovePage, error) {
+			gotLimit, gotToken = limit, token
+
+			return catalog.MovePage{Moves: []catalog.Move{}}, nil
+		},
+	})
+
+	if _, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+		RouteKey:              "GET /moves",
+		QueryStringParameters: map[string]string{"limit": "7", "cursor": "opaque"},
+	}); err != nil {
+		t.Fatalf("Handle returned error %v, want nil", err)
+	}
+
+	if gotLimit != 7 || gotToken != "opaque" {
+		t.Errorf("store received (%d, %q), want (7, %q)", gotLimit, gotToken, "opaque")
+	}
+}
+
+func TestHandleListMovesRejectsBadLimit(t *testing.T) {
+	// listMoves is left nil on purpose: reaching it would panic, so this asserts the
+	// request was rejected before the store was ever called.
+	h := newTestHandler(fakeStore{})
+
+	resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+		RouteKey:              "GET /moves",
+		QueryStringParameters: map[string]string{"limit": "0"},
+	})
+	if err != nil {
+		t.Fatalf("Handle returned error %v, want nil", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	if want := `{"error":"limit must be an integer between 1 and 100"}`; resp.Body != want {
+		t.Errorf("body = %s, want %s", resp.Body, want)
+	}
+}
+
+func TestHandleGetType(t *testing.T) {
+	tests := []struct {
+		name       string
+		get        func(ctx context.Context, id string) (catalog.Type, bool, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "found",
+			get: func(context.Context, string) (catalog.Type, bool, error) {
+				return fire(), true, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   fireJSON,
+		},
+		{
+			// A chartless type must serialise its chart as null, not disappear: the
+			// field has no omitempty, so a client always finds the key it expects.
+			name: "no chart at all",
+			get: func(context.Context, string) (catalog.Type, bool, error) {
+				return catalog.Type{ID: "normal", Name: "Normal"}, true, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"id":"normal","name":"Normal","effectiveness":null}`,
+		},
+		{
+			name: "absent is not a failure",
+			get: func(context.Context, string) (catalog.Type, bool, error) {
+				return catalog.Type{}, false, nil
+			},
+			wantStatus: http.StatusNotFound,
+			wantBody:   `{"error":"type not found"}`,
+		},
+		{
+			name: "store failure stays internal",
+			get: func(context.Context, string) (catalog.Type, bool, error) {
+				return catalog.Type{}, false, errors.New("ResourceNotFoundException: table monster-arena-dev-catalog, account 533449297933")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal error"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(fakeStore{getType: tt.get})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:       "GET /types/{id}",
+				PathParameters: map[string]string{"id": "fire"},
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestHandleListTypes(t *testing.T) {
+	tests := []struct {
+		name       string
+		list       func(ctx context.Context, limit int32, token string) (catalog.TypePage, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "one page, last one",
+			list: func(context.Context, int32, string) (catalog.TypePage, error) {
+				return catalog.TypePage{Types: []catalog.Type{fire()}}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"types":[` + fireJSON + `]}`,
+		},
+		{
+			name: "a cursor means there is more",
+			list: func(context.Context, int32, string) (catalog.TypePage, error) {
+				return catalog.TypePage{Types: []catalog.Type{fire()}, NextCursor: "eyJwayI6IlRZUEUifQ"}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"types":[` + fireJSON + `],"nextCursor":"eyJwayI6IlRZUEUifQ"}`,
+		},
+		{
+			name: "no type is an empty array, never null",
+			list: func(context.Context, int32, string) (catalog.TypePage, error) {
+				return catalog.TypePage{}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"types":[]}`,
+		},
+		{
+			name: "an invalid cursor is the caller's fault",
+			list: func(context.Context, int32, string) (catalog.TypePage, error) {
+				return catalog.TypePage{}, fmt.Errorf("%w: cursor is not valid JSON", catalog.ErrInvalid)
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"invalid: cursor is not valid JSON"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(fakeStore{listTypes: tt.list})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey: "GET /types",
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestHandleRoutesAreDistinct walks every route the switch claims to serve and checks
+// that each one reaches its own method. A case copied and half-edited — the classic
+// mistake when adding a third entity — lands on the wrong store field and panics.
+func TestHandleRoutesAreDistinct(t *testing.T) {
+	reached := ""
+
+	store := fakeStore{
+		getCreature: func(context.Context, string) (catalog.Creature, bool, error) {
+			reached = "getCreature"
+
+			return pikachu(), true, nil
+		},
+		listCreatures: func(context.Context, int32, string) (catalog.CreaturePage, error) {
+			reached = "listCreatures"
+
+			return catalog.CreaturePage{}, nil
+		},
+		getMove: func(context.Context, string) (catalog.Move, bool, error) {
+			reached = "getMove"
+
+			return thunderbolt(), true, nil
+		},
+		listMoves: func(context.Context, int32, string) (catalog.MovePage, error) {
+			reached = "listMoves"
+
+			return catalog.MovePage{}, nil
+		},
+		getType: func(context.Context, string) (catalog.Type, bool, error) {
+			reached = "getType"
+
+			return fire(), true, nil
+		},
+		listTypes: func(context.Context, int32, string) (catalog.TypePage, error) {
+			reached = "listTypes"
+
+			return catalog.TypePage{}, nil
+		},
+	}
+
+	tests := []struct {
+		routeKey string
+		want     string
+	}{
+		{routeKey: "GET /creatures/{id}", want: "getCreature"},
+		{routeKey: "GET /creatures", want: "listCreatures"},
+		{routeKey: "GET /moves/{id}", want: "getMove"},
+		{routeKey: "GET /moves", want: "listMoves"},
+		{routeKey: "GET /types/{id}", want: "getType"},
+		{routeKey: "GET /types", want: "listTypes"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.routeKey, func(t *testing.T) {
+			reached = ""
+			h := newTestHandler(store)
+
+			if _, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:       tt.routeKey,
+				PathParameters: map[string]string{"id": "whatever"},
+			}); err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+
+			if reached != tt.want {
+				t.Errorf("%q reached %q, want %q", tt.routeKey, reached, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleListTypesForwardsParameters checks that limit and cursor reach the store
+// unchanged, as for the other listings.
+func TestHandleListTypesForwardsParameters(t *testing.T) {
+	var gotLimit int32
+	var gotToken string
+
+	h := newTestHandler(fakeStore{
+		listTypes: func(_ context.Context, limit int32, token string) (catalog.TypePage, error) {
+			gotLimit, gotToken = limit, token
+
+			return catalog.TypePage{Types: []catalog.Type{}}, nil
+		},
+	})
+
+	if _, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+		RouteKey:              "GET /types",
+		QueryStringParameters: map[string]string{"limit": "3", "cursor": "opaque"},
+	}); err != nil {
+		t.Fatalf("Handle returned error %v, want nil", err)
+	}
+
+	if gotLimit != 3 || gotToken != "opaque" {
+		t.Errorf("store received (%d, %q), want (3, %q)", gotLimit, gotToken, "opaque")
+	}
+}
+
+func TestHandleListTypesRejectsBadLimit(t *testing.T) {
+	// listTypes is left nil on purpose: reaching it would panic.
+	h := newTestHandler(fakeStore{})
+
+	resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+		RouteKey:              "GET /types",
+		QueryStringParameters: map[string]string{"limit": "101"},
+	})
+	if err != nil {
+		t.Fatalf("Handle returned error %v, want nil", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
