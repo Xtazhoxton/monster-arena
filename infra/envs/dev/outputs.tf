@@ -10,8 +10,7 @@ output "creatures_url" {
 
 output "auth_token_endpoint" {
   description = "OAuth2 token endpoint for machine clients"
-  value       = "https://${aws_cognito_user_pool.main.domain}.auth.${aws_cognito_user_pool_domain.main.region}.amazoncognito.com/oauth2/token"
-
+  value       = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${aws_cognito_user_pool_domain.main.region}.amazoncognito.com/oauth2/token"
 }
 
 output "admin_client_id" {
