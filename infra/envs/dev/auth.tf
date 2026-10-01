@@ -41,7 +41,7 @@ resource "aws_cognito_user_pool_client" "admin_cli" {
   generate_secret                      = true
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["client_credentials"]
-  allowed_oauth_scopes                 = ["catalog/write"]
+  allowed_oauth_scopes                 = ["${aws_cognito_resource_server.catalog.identifier}/write"]
 
   access_token_validity = 1
 
