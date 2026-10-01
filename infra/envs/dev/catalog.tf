@@ -52,7 +52,7 @@ resource "aws_iam_role_policy_attachment" "catalog_logs" {
 
 data "aws_iam_policy_document" "catalog_table" {
   statement {
-    sid = "ReadCreatures"
+    sid = "ReadCatalog"
 
     actions = [
       "dynamodb:GetItem",
@@ -63,6 +63,19 @@ data "aws_iam_policy_document" "catalog_table" {
     resources = [
       aws_dynamodb_table.catalog.arn,
       "${aws_dynamodb_table.catalog.arn}/index/*",
+    ]
+  }
+
+  statement {
+    sid = "WriteCatalog"
+
+    actions = [
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.catalog.arn
     ]
   }
 }
@@ -134,4 +147,62 @@ resource "aws_lambda_permission" "catalog_api" {
   function_name = aws_lambda_function.catalog.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+}
+
+resource "aws_apigatewayv2_route" "get_moves" {
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = "GET /moves"
+  target             = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type = "NONE"
+
+}
+
+resource "aws_apigatewayv2_route" "get_move" {
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = "GET /moves/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type = "NONE"
+}
+
+resource "aws_apigatewayv2_route" "get_types" {
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = "GET /types"
+  target             = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type = "NONE"
+
+}
+
+resource "aws_apigatewayv2_route" "get_type" {
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = "GET /types/{id}"
+  target             = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type = "NONE"
+}
+
+resource "aws_apigatewayv2_route" "put_creature" {
+  api_id               = aws_apigatewayv2_api.main.id
+  route_key            = "PUT /creatures/{id}"
+  target               = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.jwt.id
+  authorization_scopes = ["catalog/write"]
+
+}
+
+resource "aws_apigatewayv2_route" "put_move" {
+  api_id               = aws_apigatewayv2_api.main.id
+  route_key            = "PUT /moves/{id}"
+  target               = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.jwt.id
+  authorization_scopes = ["catalog/write"]
+}
+
+resource "aws_apigatewayv2_route" "put_type" {
+  api_id               = aws_apigatewayv2_api.main.id
+  route_key            = "PUT /types/{id}"
+  target               = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.jwt.id
+  authorization_scopes = ["catalog/write"]
 }

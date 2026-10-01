@@ -189,9 +189,9 @@ const (
 	maxPageSize     = 100
 )
 
-// queryCreaturePage runs one page of a query on the inverted index for the given sort
+// queryIndexPage runs one page of a query on the inverted index for the given sort
 // key, and returns the raw items with the token of the next page.
-func (s *Store) queryCreaturePage(ctx context.Context, sk string, limit int32, token string) ([]map[string]types.AttributeValue, string, error) {
+func (s *Store) queryIndexPage(ctx context.Context, sk string, limit int32, token string) ([]map[string]types.AttributeValue, string, error) {
 	if limit <= 0 || limit > maxPageSize {
 		limit = defaultPageSize
 	}
@@ -226,7 +226,7 @@ func (s *Store) queryCreaturePage(ctx context.Context, sk string, limit int32, t
 // ListCreatures returns one page of creature profiles, movepools excluded.
 // An empty NextCursor means the last page was reached.
 func (s *Store) ListCreatures(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error) {
-	items, next, err := s.queryCreaturePage(ctx, creatureEntity, limit, token)
+	items, next, err := s.queryIndexPage(ctx, creatureEntity, limit, token)
 	if err != nil {
 		return catalog.CreaturePage{}, err
 	}
@@ -312,7 +312,7 @@ func (s *Store) ListCreaturesByType(ctx context.Context, typeID string, limit in
 		return catalog.CreaturePage{}, fmt.Errorf("%w: type %q must be a slug", catalog.ErrInvalid, typeID)
 	}
 
-	items, next, err := s.queryCreaturePage(ctx, creatureTypeSK(typeID), limit, token)
+	items, next, err := s.queryIndexPage(ctx, creatureTypeSK(typeID), limit, token)
 	if err != nil {
 		return catalog.CreaturePage{}, err
 	}

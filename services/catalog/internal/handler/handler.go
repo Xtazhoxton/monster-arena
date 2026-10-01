@@ -17,7 +17,7 @@ import (
 	"github.com/Xtazhoxton/monster-arena/services/catalog/internal/catalog"
 )
 
-// creatureStore is the slice of the repository the handlers actually need.
+// creatureStore is the slice of the repository the creature routes need.
 type creatureStore interface {
 	GetCreature(ctx context.Context, id string) (catalog.Creature, bool, error)
 	ListCreatures(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error)
@@ -25,14 +25,35 @@ type creatureStore interface {
 	PutCreature(ctx context.Context, c catalog.Creature) error
 }
 
-// Handler serves the creature routes of the catalog.
+// moveStore is the slice of the repository the move routes need.
+type moveStore interface {
+	GetMove(ctx context.Context, id string) (catalog.Move, bool, error)
+	ListMoves(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
+	PutMove(ctx context.Context, m catalog.Move) error
+}
+
+// typeStore is the slice of the repository the type routes need.
+type typeStore interface {
+	GetType(ctx context.Context, id string) (catalog.Type, bool, error)
+	ListTypes(ctx context.Context, limit int32, token string) (catalog.TypePage, error)
+	PutType(ctx context.Context, t catalog.Type) error
+}
+
+// catalogStore is everything the handler needs, whoever provides it.
+type catalogStore interface {
+	creatureStore
+	moveStore
+	typeStore
+}
+
+// Handler serves the catalog routes.
 type Handler struct {
-	store  creatureStore
+	store  catalogStore
 	logger *slog.Logger
 }
 
 // New returns a Handler reading and writing through store, logging with logger.
-func New(store creatureStore, logger *slog.Logger) *Handler {
+func New(store catalogStore, logger *slog.Logger) *Handler {
 	return &Handler{store: store, logger: logger}
 }
 
@@ -49,6 +70,38 @@ func (h *Handler) getCreature(ctx context.Context, req events.APIGatewayV2HTTPRe
 	}
 
 	return h.writeJSON(ctx, http.StatusOK, creature)
+}
+
+// getMove serves GET /moves/{id}.
+func (h *Handler) getMove(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	id := req.PathParameters["id"]
+
+	move, found, err := h.store.GetMove(ctx, id)
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if !found {
+		return h.writeError(ctx, http.StatusNotFound, "move not found")
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, move)
+}
+
+// getType serves GET /types/{id}.
+func (h *Handler) getType(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	id := req.PathParameters["id"]
+
+	elementalType, found, err := h.store.GetType(ctx, id)
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if !found {
+		return h.writeError(ctx, http.StatusNotFound, "type not found")
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, elementalType)
 }
 
 // maxLimit is the largest page this API serves. It matches the 100-item ceiling of a
@@ -96,6 +149,44 @@ func (h *Handler) listCreatures(ctx context.Context, req events.APIGatewayV2HTTP
 	return h.writeJSON(ctx, http.StatusOK, page)
 }
 
+// listMoves serves GET /moves.
+func (h *Handler) listMoves(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	limit, err := parseLimit(req.QueryStringParameters["limit"])
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+
+	page, err := h.store.ListMoves(ctx, limit, req.QueryStringParameters["cursor"])
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if page.Moves == nil {
+		page.Moves = []catalog.Move{}
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, page)
+}
+
+// listTypes serves GET /types.
+func (h *Handler) listTypes(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	limit, err := parseLimit(req.QueryStringParameters["limit"])
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+
+	page, err := h.store.ListTypes(ctx, limit, req.QueryStringParameters["cursor"])
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	if page.Types == nil {
+		page.Types = []catalog.Type{}
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, page)
+}
+
 // requestBody returns the body of req, decoded when API Gateway sent it base64-encoded.
 func requestBody(req events.APIGatewayV2HTTPRequest) ([]byte, error) {
 	if !req.IsBase64Encoded {
@@ -137,6 +228,74 @@ func (h *Handler) putCreature(ctx context.Context, req events.APIGatewayV2HTTPRe
 	return events.APIGatewayV2HTTPResponse{StatusCode: http.StatusNoContent}
 }
 
+// putMove serves PUT /moves/{id}. A move has no sub-resource, so the body is the
+// whole entity: the stored representatio is known and return.
+func (h *Handler) putMove(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	body, err := requestBody(req)
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, "body is not valid base64")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+
+	var move catalog.Move
+	if err := dec.Decode(&move); err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+	if dec.More() {
+		return h.writeError(ctx, http.StatusBadRequest, "body must contain a single JSON object")
+	}
+
+	id := req.PathParameters["id"]
+	if move.ID != "" && move.ID != id {
+		return h.writeError(ctx, http.StatusBadRequest, "id in body does not match the id in the URL")
+	}
+	move.ID = id
+	if err := h.store.PutMove(ctx, move); err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, move)
+}
+
+// putType serves PUT /types/{id}. Like a move, a type is written whole — but the stored
+// effectiveness map is the normalised one, so the response echoes the store's view.
+func (h *Handler) putType(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	body, err := requestBody(req)
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, "body is not valid base64")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+
+	var elementalType catalog.Type
+	if err := dec.Decode(&elementalType); err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+	if dec.More() {
+		return h.writeError(ctx, http.StatusBadRequest, "body must contain a single JSON object")
+	}
+
+	id := req.PathParameters["id"]
+	if elementalType.ID != "" && elementalType.ID != id {
+		return h.writeError(ctx, http.StatusBadRequest, "id in body does not match the id in the URL")
+	}
+
+	elementalType.ID = id
+	if err := h.store.PutType(ctx, elementalType); err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	// Presentation only, after the write: the response always carries an object, never
+	// null, so a client can iterate the matrix without testing it first.
+	if elementalType.Effectiveness == nil {
+		elementalType.Effectiveness = map[string]float64{}
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, elementalType)
+}
+
 // Handle dispatches one request to the method serving its route.
 // Every case mirrors a route declared in Terraform.
 func (h *Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -150,6 +309,24 @@ func (h *Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest
 
 	case "PUT /creatures/{id}":
 		return h.putCreature(ctx, req), nil
+
+	case "GET /moves/{id}":
+		return h.getMove(ctx, req), nil
+
+	case "GET /moves":
+		return h.listMoves(ctx, req), nil
+
+	case "PUT /moves/{id}":
+		return h.putMove(ctx, req), nil
+
+	case "GET /types/{id}":
+		return h.getType(ctx, req), nil
+
+	case "GET /types":
+		return h.listTypes(ctx, req), nil
+
+	case "PUT /types/{id}":
+		return h.putType(ctx, req), nil
 
 	default:
 		h.logger.ErrorContext(ctx, "unrouted request", slog.String("route_key", req.RouteKey))
