@@ -42,11 +42,15 @@ func (i typeItem) elementalType() (catalog.Type, error) {
 	if !ok {
 		return catalog.Type{}, fmt.Errorf("malformed type item: PK %q", i.PK)
 	}
+	effectiveness := i.Effectiveness
+	if effectiveness == nil {
+		effectiveness = map[string]float64{}
+	}
 
 	return catalog.Type{
 		ID:            id,
 		Name:          i.Name,
-		Effectiveness: i.Effectiveness,
+		Effectiveness: effectiveness,
 	}, nil
 }
 

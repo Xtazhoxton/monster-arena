@@ -25,8 +25,10 @@ type fakeStore struct {
 	putCreature         func(ctx context.Context, c catalog.Creature) error
 	getMove             func(ctx context.Context, id string) (catalog.Move, bool, error)
 	listMoves           func(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
+	putMove             func(ctx context.Context, m catalog.Move) error
 	getType             func(ctx context.Context, id string) (catalog.Type, bool, error)
 	listTypes           func(ctx context.Context, limit int32, token string) (catalog.TypePage, error)
+	putType             func(ctx context.Context, t catalog.Type) error
 }
 
 func (f fakeStore) GetCreature(ctx context.Context, id string) (catalog.Creature, bool, error) {
@@ -53,12 +55,20 @@ func (f fakeStore) ListMoves(ctx context.Context, limit int32, token string) (ca
 	return f.listMoves(ctx, limit, token)
 }
 
+func (f fakeStore) PutMove(ctx context.Context, m catalog.Move) error {
+	return f.putMove(ctx, m)
+}
+
 func (f fakeStore) GetType(ctx context.Context, id string) (catalog.Type, bool, error) {
 	return f.getType(ctx, id)
 }
 
 func (f fakeStore) ListTypes(ctx context.Context, limit int32, token string) (catalog.TypePage, error) {
 	return f.listTypes(ctx, limit, token)
+}
+
+func (f fakeStore) PutType(ctx context.Context, t catalog.Type) error {
+	return f.putType(ctx, t)
 }
 
 // newTestHandler returns a Handler over store, logging nowhere.
@@ -120,6 +130,14 @@ const (
 	// pikachuBody is a valid PUT body: no "id", since the URL carries it.
 	pikachuBody = `{"name":"Pikachu","generation":1,"types":["electric"],` +
 		`"baseStats":{"hp":35,"attack":55,"defense":40,"specialAttack":50,"specialDefense":50,"speed":90}}`
+
+	// thunderboltBody is a valid PUT body for a move, likewise without its "id".
+	thunderboltBody = `{"name":"Thunderbolt","type":"electric","damageClass":"special",` +
+		`"power":90,"accuracy":100,"pp":15}`
+
+	// fireBody is a valid PUT body for a type. encoding/json sorts map keys, so the
+	// effectiveness map always serialises in this order.
+	fireBody = `{"name":"Fire","effectiveness":{"grass":2,"water":0.5}}`
 )
 
 func TestParseLimit(t *testing.T) {
@@ -730,6 +748,152 @@ func TestHandleListMovesRejectsBadLimit(t *testing.T) {
 	}
 }
 
+// TestHandlePutMove mirrors TestHandlePutCreature, with one difference that is the whole
+// point: a move has no sub-resource, so a success answers 200 with the stored
+// representation instead of an empty 204.
+func TestHandlePutMove(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		base64Body bool
+		putErr     error
+		wantStatus int
+		wantBody   string
+		wantStored bool
+	}{
+		{
+			name:       "valid body, id taken from the URL",
+			body:       thunderboltBody,
+			wantStatus: http.StatusOK,
+			wantBody:   thunderboltJSON,
+			wantStored: true,
+		},
+		{
+			name:       "id in body agreeing with the URL",
+			body:       `{"id":"thunderbolt",` + thunderboltBody[1:],
+			wantStatus: http.StatusOK,
+			wantBody:   thunderboltJSON,
+			wantStored: true,
+		},
+		{
+			name:       "id in body disagreeing with the URL",
+			body:       `{"id":"thunder",` + thunderboltBody[1:],
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"id in body does not match the id in the URL"}`,
+		},
+		{
+			// Without DisallowUnknownFields this would store a move with no damage class,
+			// which Validate rejects — but only because the field is required. A typo on
+			// an optional field would pass silently.
+			name:       "misspelled field is refused",
+			body:       `{"name":"Thunderbolt","type":"electric","damageClas":"special","pp":15}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"json: unknown field \"damageClas\""}`,
+		},
+		{
+			name:       "two objects in one body",
+			body:       thunderboltBody + `{"name":"Thunder"}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"body must contain a single JSON object"}`,
+		},
+		{
+			name:       "base64 body is decoded",
+			body:       base64.StdEncoding.EncodeToString([]byte(thunderboltBody)),
+			base64Body: true,
+			wantStatus: http.StatusOK,
+			wantBody:   thunderboltJSON,
+			wantStored: true,
+		},
+		{
+			name:       "body announced as base64 but is not",
+			body:       "!!!not base64!!!",
+			base64Body: true,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"body is not valid base64"}`,
+		},
+		{
+			name:       "domain rules are the store's to enforce",
+			body:       thunderboltBody,
+			putErr:     fmt.Errorf("%w: status move cannot have power 90", catalog.ErrInvalid),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"invalid: status move cannot have power 90"}`,
+			wantStored: true,
+		},
+		{
+			name:       "store failure stays internal",
+			body:       thunderboltBody,
+			putErr:     errors.New("ProvisionedThroughputExceededException"),
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal error"}`,
+			wantStored: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stored *catalog.Move
+
+			h := newTestHandler(fakeStore{
+				putMove: func(_ context.Context, m catalog.Move) error {
+					stored = &m
+					return tt.putErr
+				},
+			})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:        "PUT /moves/{id}",
+				PathParameters:  map[string]string{"id": "thunderbolt"},
+				Body:            tt.body,
+				IsBase64Encoded: tt.base64Body,
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+			switch {
+			case tt.wantStored && stored == nil:
+				t.Error("store was not called, want a write")
+			case !tt.wantStored && stored != nil:
+				t.Errorf("store was called with %+v, want no write", *stored)
+			case tt.wantStored && stored.ID != "thunderbolt":
+				t.Errorf("stored id = %q, want thunderbolt", stored.ID)
+			}
+		})
+	}
+}
+
+// TestHandlePutMoveRejectsMalformedJSON keeps the wording of encoding/json out of the
+// assertions, as for creatures.
+func TestHandlePutMoveRejectsMalformedJSON(t *testing.T) {
+	for _, body := range []string{"", "{", "not json at all", `{"name":}`, `[]`} {
+		t.Run(fmt.Sprintf("body %q", body), func(t *testing.T) {
+			h := newTestHandler(fakeStore{
+				putMove: func(_ context.Context, m catalog.Move) error {
+					t.Errorf("store was called with %+v, want no write", m)
+					return nil
+				},
+			})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:       "PUT /moves/{id}",
+				PathParameters: map[string]string{"id": "thunderbolt"},
+				Body:           body,
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 func TestHandleGetType(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -964,5 +1128,156 @@ func TestHandleListTypesRejectsBadLimit(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestHandlePutType is TestHandlePutMove applied to types, with one case of its own: the
+// effectiveness map survives the round trip unchanged, multipliers included.
+func TestHandlePutType(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		base64Body bool
+		putErr     error
+		wantStatus int
+		wantBody   string
+		wantStored bool
+	}{
+		{
+			name:       "valid body, id taken from the URL",
+			body:       fireBody,
+			wantStatus: http.StatusOK,
+			wantBody:   fireJSON,
+			wantStored: true,
+		},
+		{
+			name:       "id in body agreeing with the URL",
+			body:       `{"id":"fire",` + fireBody[1:],
+			wantStatus: http.StatusOK,
+			wantBody:   fireJSON,
+			wantStored: true,
+		},
+		{
+			name:       "id in body disagreeing with the URL",
+			body:       `{"id":"water",` + fireBody[1:],
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"id in body does not match the id in the URL"}`,
+		},
+		{
+			name:       "misspelled field is refused",
+			body:       `{"name":"Fire","effectivness":{"grass":2}}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"json: unknown field \"effectivness\""}`,
+		},
+		{
+			// A type with no effectiveness at all is legal: absent means 1 everywhere. The
+			// response still carries an object, never null, so a client can always iterate.
+			name:       "empty effectiveness answers an empty object",
+			body:       `{"name":"Fire"}`,
+			wantStatus: http.StatusOK,
+			wantBody:   `{"id":"fire","name":"Fire","effectiveness":{}}`,
+			wantStored: true,
+		},
+		{
+			name:       "two objects in one body",
+			body:       fireBody + `{"name":"Water"}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"body must contain a single JSON object"}`,
+		},
+		{
+			name:       "base64 body is decoded",
+			body:       base64.StdEncoding.EncodeToString([]byte(fireBody)),
+			base64Body: true,
+			wantStatus: http.StatusOK,
+			wantBody:   fireJSON,
+			wantStored: true,
+		},
+		{
+			name:       "body announced as base64 but is not",
+			body:       "!!!not base64!!!",
+			base64Body: true,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"body is not valid base64"}`,
+		},
+		{
+			name:       "domain rules are the store's to enforce",
+			body:       fireBody,
+			putErr:     fmt.Errorf("%w: effectiveness against \"normal\" cannot be 1", catalog.ErrInvalid),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"invalid: effectiveness against \"normal\" cannot be 1"}`,
+			wantStored: true,
+		},
+		{
+			name:       "store failure stays internal",
+			body:       fireBody,
+			putErr:     errors.New("ResourceNotFoundException: Requested resource not found"),
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal error"}`,
+			wantStored: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stored *catalog.Type
+
+			h := newTestHandler(fakeStore{
+				putType: func(_ context.Context, elementalType catalog.Type) error {
+					stored = &elementalType
+					return tt.putErr
+				},
+			})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:        "PUT /types/{id}",
+				PathParameters:  map[string]string{"id": "fire"},
+				Body:            tt.body,
+				IsBase64Encoded: tt.base64Body,
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+			switch {
+			case tt.wantStored && stored == nil:
+				t.Error("store was not called, want a write")
+			case !tt.wantStored && stored != nil:
+				t.Errorf("store was called with %+v, want no write", *stored)
+			case tt.wantStored && stored.ID != "fire":
+				t.Errorf("stored id = %q, want fire", stored.ID)
+			}
+		})
+	}
+}
+
+// TestHandlePutTypeRejectsMalformedJSON keeps the wording of encoding/json out of the
+// assertions, as for creatures and moves.
+func TestHandlePutTypeRejectsMalformedJSON(t *testing.T) {
+	for _, body := range []string{"", "{", "not json at all", `{"name":}`, `[]`} {
+		t.Run(fmt.Sprintf("body %q", body), func(t *testing.T) {
+			h := newTestHandler(fakeStore{
+				putType: func(_ context.Context, elementalType catalog.Type) error {
+					t.Errorf("store was called with %+v, want no write", elementalType)
+					return nil
+				},
+			})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:       "PUT /types/{id}",
+				PathParameters: map[string]string{"id": "fire"},
+				Body:           body,
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+			}
+		})
 	}
 }

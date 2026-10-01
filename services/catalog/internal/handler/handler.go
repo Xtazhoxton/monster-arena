@@ -29,12 +29,14 @@ type creatureStore interface {
 type moveStore interface {
 	GetMove(ctx context.Context, id string) (catalog.Move, bool, error)
 	ListMoves(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
+	PutMove(ctx context.Context, m catalog.Move) error
 }
 
 // typeStore is the slice of the repository the type routes need.
 type typeStore interface {
 	GetType(ctx context.Context, id string) (catalog.Type, bool, error)
 	ListTypes(ctx context.Context, limit int32, token string) (catalog.TypePage, error)
+	PutType(ctx context.Context, t catalog.Type) error
 }
 
 // catalogStore is everything the handler needs, whoever provides it.
@@ -226,6 +228,74 @@ func (h *Handler) putCreature(ctx context.Context, req events.APIGatewayV2HTTPRe
 	return events.APIGatewayV2HTTPResponse{StatusCode: http.StatusNoContent}
 }
 
+// putMove serves PUT /moves/{id}. A move has no sub-resource, so the body is the
+// whole entity: the stored representatio is known and return.
+func (h *Handler) putMove(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	body, err := requestBody(req)
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, "body is not valid base64")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+
+	var move catalog.Move
+	if err := dec.Decode(&move); err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+	if dec.More() {
+		return h.writeError(ctx, http.StatusBadRequest, "body must contain a single JSON object")
+	}
+
+	id := req.PathParameters["id"]
+	if move.ID != "" && move.ID != id {
+		return h.writeError(ctx, http.StatusBadRequest, "id in body does not match the id in the URL")
+	}
+	move.ID = id
+	if err := h.store.PutMove(ctx, move); err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, move)
+}
+
+// putType serves PUT /types/{id}. Like a move, a type is written whole — but the stored
+// effectiveness map is the normalised one, so the response echoes the store's view.
+func (h *Handler) putType(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	body, err := requestBody(req)
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, "body is not valid base64")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+
+	var elementalType catalog.Type
+	if err := dec.Decode(&elementalType); err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+	if dec.More() {
+		return h.writeError(ctx, http.StatusBadRequest, "body must contain a single JSON object")
+	}
+
+	id := req.PathParameters["id"]
+	if elementalType.ID != "" && elementalType.ID != id {
+		return h.writeError(ctx, http.StatusBadRequest, "id in body does not match the id in the URL")
+	}
+
+	elementalType.ID = id
+	if err := h.store.PutType(ctx, elementalType); err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+
+	// Presentation only, after the write: the response always carries an object, never
+	// null, so a client can iterate the matrix without testing it first.
+	if elementalType.Effectiveness == nil {
+		elementalType.Effectiveness = map[string]float64{}
+	}
+
+	return h.writeJSON(ctx, http.StatusOK, elementalType)
+}
+
 // Handle dispatches one request to the method serving its route.
 // Every case mirrors a route declared in Terraform.
 func (h *Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -246,11 +316,17 @@ func (h *Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest
 	case "GET /moves":
 		return h.listMoves(ctx, req), nil
 
+	case "PUT /moves/{id}":
+		return h.putMove(ctx, req), nil
+
 	case "GET /types/{id}":
 		return h.getType(ctx, req), nil
 
 	case "GET /types":
 		return h.listTypes(ctx, req), nil
+
+	case "PUT /types/{id}":
+		return h.putType(ctx, req), nil
 
 	default:
 		h.logger.ErrorContext(ctx, "unrouted request", slog.String("route_key", req.RouteKey))
