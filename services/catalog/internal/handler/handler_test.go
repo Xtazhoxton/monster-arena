@@ -23,6 +23,7 @@ type fakeStore struct {
 	listCreatures       func(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error)
 	listCreaturesByType func(ctx context.Context, typeID string, limit int32, token string) (catalog.CreaturePage, error)
 	putCreature         func(ctx context.Context, c catalog.Creature) error
+	putMovepool         func(ctx context.Context, id string, p catalog.Movepool) (bool, error)
 	getMove             func(ctx context.Context, id string) (catalog.Move, bool, error)
 	listMoves           func(ctx context.Context, limit int32, token string) (catalog.MovePage, error)
 	putMove             func(ctx context.Context, m catalog.Move) error
@@ -45,6 +46,10 @@ func (f fakeStore) ListCreaturesByType(ctx context.Context, typeID string, limit
 
 func (f fakeStore) PutCreature(ctx context.Context, c catalog.Creature) error {
 	return f.putCreature(ctx, c)
+}
+
+func (f fakeStore) PutMovepool(ctx context.Context, id string, p catalog.Movepool) (bool, error) {
+	return f.putMovepool(ctx, id, p)
 }
 
 func (f fakeStore) GetMove(ctx context.Context, id string) (catalog.Move, bool, error) {
@@ -572,6 +577,145 @@ func TestHandlePutCreatureRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestHandlePutMovepool(t *testing.T) {
+	const movepoolJSON = `{"moves":[{"id":"thunderbolt","learnMethod":"level-up","level":26},` +
+		`{"id":"thunder-wave","learnMethod":"machine"}]}`
+
+	tests := []struct {
+		name       string
+		body       string
+		base64Body bool
+		found      bool
+		putErr     error
+		wantStatus int
+		wantBody   string
+		wantStored bool
+	}{
+		{
+			name:       "valid body is stored and echoed",
+			body:       movepoolJSON,
+			found:      true,
+			wantStatus: http.StatusOK,
+			wantBody:   movepoolJSON,
+			wantStored: true,
+		},
+		{
+			// [] is the only way to empty a movepool, and it must echo [], not null.
+			name:       "explicit empty movepool",
+			body:       `{"moves":[]}`,
+			found:      true,
+			wantStatus: http.StatusOK,
+			wantBody:   `{"moves":[]}`,
+			wantStored: true,
+		},
+		{
+			// A PUT replaces everything: an empty object would wipe the movepool.
+			name:       "missing moves field",
+			body:       `{}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"moves is required; send [] to empty the movepool"}`,
+		},
+		{
+			name:       "null moves field",
+			body:       `{"moves":null}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"moves is required; send [] to empty the movepool"}`,
+		},
+		{
+			name:       "misspelled field is refused",
+			body:       `{"move":[]}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"json: unknown field \"move\""}`,
+		},
+		{
+			name:       "two objects in one body",
+			body:       movepoolJSON + `{"moves":[]}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"body must contain a single JSON object"}`,
+		},
+		{
+			name:       "base64 body is decoded",
+			body:       base64.StdEncoding.EncodeToString([]byte(movepoolJSON)),
+			base64Body: true,
+			found:      true,
+			wantStatus: http.StatusOK,
+			wantBody:   movepoolJSON,
+			wantStored: true,
+		},
+		{
+			name:       "body announced as base64 but is not",
+			body:       "!!!not base64!!!",
+			base64Body: true,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"body is not valid base64"}`,
+		},
+		{
+			name:       "unknown creature",
+			body:       movepoolJSON,
+			found:      false,
+			wantStatus: http.StatusNotFound,
+			wantBody:   `{"error":"creature not found"}`,
+			wantStored: true,
+		},
+		{
+			name:       "domain rules are the store's to enforce",
+			body:       movepoolJSON,
+			putErr:     fmt.Errorf("%w: move %q is listed twice", catalog.ErrInvalid, "thunderbolt"),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"invalid: move \"thunderbolt\" is listed twice"}`,
+			wantStored: true,
+		},
+		{
+			name:       "store failure stays internal",
+			body:       movepoolJSON,
+			putErr:     errors.New("put movepool of \"pikachu\": 3 writes unprocessed after 5 attempts"),
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal error"}`,
+			wantStored: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				storedID string
+				stored   *catalog.Movepool
+			)
+
+			h := newTestHandler(fakeStore{
+				putMovepool: func(_ context.Context, id string, p catalog.Movepool) (bool, error) {
+					storedID, stored = id, &p
+					return tt.found, tt.putErr
+				},
+			})
+
+			resp, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
+				RouteKey:        "PUT /creatures/{id}/moves",
+				PathParameters:  map[string]string{"id": "pikachu"},
+				Body:            tt.body,
+				IsBase64Encoded: tt.base64Body,
+			})
+			if err != nil {
+				t.Fatalf("Handle returned error %v, want nil", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if resp.Body != tt.wantBody {
+				t.Errorf("body  = %s\nwant  = %s", resp.Body, tt.wantBody)
+			}
+			switch {
+			case tt.wantStored && stored == nil:
+				t.Error("store was not called, want a write")
+			case !tt.wantStored && stored != nil:
+				t.Errorf("store was called with %+v, want no write", *stored)
+			case tt.wantStored && storedID != "pikachu":
+				t.Errorf("stored id = %q, want pikachu", storedID)
+			}
+		})
+	}
+}
+
 func TestHandleGetMove(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1056,10 +1200,21 @@ func TestHandleRoutesAreDistinct(t *testing.T) {
 
 			return catalog.TypePage{}, nil
 		},
+		putCreature: func(context.Context, catalog.Creature) error {
+			reached = "putCreature"
+
+			return nil
+		},
+		putMovepool: func(context.Context, string, catalog.Movepool) (bool, error) {
+			reached = "putMovepool"
+
+			return true, nil
+		},
 	}
 
 	tests := []struct {
 		routeKey string
+		body     string
 		want     string
 	}{
 		{routeKey: "GET /creatures/{id}", want: "getCreature"},
@@ -1068,6 +1223,9 @@ func TestHandleRoutesAreDistinct(t *testing.T) {
 		{routeKey: "GET /moves", want: "listMoves"},
 		{routeKey: "GET /types/{id}", want: "getType"},
 		{routeKey: "GET /types", want: "listTypes"},
+		// The movepool route extends the creature route: neither may shadow the other.
+		{routeKey: "PUT /creatures/{id}", body: pikachuBody, want: "putCreature"},
+		{routeKey: "PUT /creatures/{id}/moves", body: `{"moves":[]}`, want: "putMovepool"},
 	}
 
 	for _, tt := range tests {
@@ -1078,6 +1236,7 @@ func TestHandleRoutesAreDistinct(t *testing.T) {
 			if _, err := h.Handle(context.Background(), events.APIGatewayV2HTTPRequest{
 				RouteKey:       tt.routeKey,
 				PathParameters: map[string]string{"id": "whatever"},
+				Body:           tt.body,
 			}); err != nil {
 				t.Fatalf("Handle returned error %v, want nil", err)
 			}

@@ -23,6 +23,7 @@ type creatureStore interface {
 	ListCreatures(ctx context.Context, limit int32, token string) (catalog.CreaturePage, error)
 	ListCreaturesByType(ctx context.Context, typeID string, limit int32, token string) (catalog.CreaturePage, error)
 	PutCreature(ctx context.Context, c catalog.Creature) error
+	PutMovepool(ctx context.Context, id string, p catalog.Movepool) (bool, error)
 }
 
 // moveStore is the slice of the repository the move routes need.
@@ -228,6 +229,39 @@ func (h *Handler) putCreature(ctx context.Context, req events.APIGatewayV2HTTPRe
 	return events.APIGatewayV2HTTPResponse{StatusCode: http.StatusNoContent}
 }
 
+// putMovepool serves PUT /creatures/{id}/moves. The body replaces the whole movepool,
+// so the stored representation is known and returned.
+func (h *Handler) putMovepool(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
+	body, err := requestBody(req)
+	if err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, "body is not valid base64")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+
+	var movepool catalog.Movepool
+	if err := dec.Decode(&movepool); err != nil {
+		return h.writeError(ctx, http.StatusBadRequest, err.Error())
+	}
+	if dec.More() {
+		return h.writeError(ctx, http.StatusBadRequest, "body must contain a single JSON object")
+	}
+
+	if movepool.Moves == nil {
+		return h.writeError(ctx, http.StatusBadRequest, "moves is required; send [] to empty the movepool")
+	}
+
+	found, err := h.store.PutMovepool(ctx, req.PathParameters["id"], movepool)
+	if err != nil {
+		return h.writeStoreError(ctx, err)
+	}
+	if !found {
+		return h.writeError(ctx, http.StatusNotFound, "creature not found")
+	}
+	return h.writeJSON(ctx, http.StatusOK, movepool)
+}
+
 // putMove serves PUT /moves/{id}. A move has no sub-resource, so the body is the
 // whole entity: the stored representatio is known and return.
 func (h *Handler) putMove(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
@@ -309,6 +343,9 @@ func (h *Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest
 
 	case "PUT /creatures/{id}":
 		return h.putCreature(ctx, req), nil
+
+	case "PUT /creatures/{id}/moves":
+		return h.putMovepool(ctx, req), nil
 
 	case "GET /moves/{id}":
 		return h.getMove(ctx, req), nil
