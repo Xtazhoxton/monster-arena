@@ -72,6 +72,7 @@ data "aws_iam_policy_document" "catalog_table" {
     actions = [
       "dynamodb:PutItem",
       "dynamodb:DeleteItem",
+      "dynamodb:BatchWriteItem",
     ]
 
     resources = [
@@ -201,6 +202,15 @@ resource "aws_apigatewayv2_route" "put_move" {
 resource "aws_apigatewayv2_route" "put_type" {
   api_id               = aws_apigatewayv2_api.main.id
   route_key            = "PUT /types/{id}"
+  target               = "integrations/${aws_apigatewayv2_integration.catalog.id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.jwt.id
+  authorization_scopes = ["catalog/write"]
+}
+
+resource "aws_apigatewayv2_route" "put_movepool" {
+  api_id               = aws_apigatewayv2_api.main.id
+  route_key            = "PUT /creatures/{id}/moves"
   target               = "integrations/${aws_apigatewayv2_integration.catalog.id}"
   authorization_type   = "JWT"
   authorizer_id        = aws_apigatewayv2_authorizer.jwt.id
