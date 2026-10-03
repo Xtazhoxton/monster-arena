@@ -59,10 +59,24 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "$default"
   auto_deploy = true
-
   default_route_settings {
     throttling_burst_limit = 10
     throttling_rate_limit  = 5
+  }
+
+  dynamic "route_settings" {
+    for_each = toset([
+      aws_apigatewayv2_route.put_creature.route_key,
+      aws_apigatewayv2_route.put_movepool.route_key,
+      aws_apigatewayv2_route.put_move.route_key,
+      aws_apigatewayv2_route.put_type.route_key,
+    ])
+
+    content {
+      route_key              = route_settings.value
+      throttling_rate_limit  = 20
+      throttling_burst_limit = 40
+    }
   }
 }
 
