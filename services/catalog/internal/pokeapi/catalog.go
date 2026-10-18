@@ -2,6 +2,8 @@ package pokeapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/Xtazhoxton/monster-arena/services/catalog/internal/catalog"
@@ -9,6 +11,10 @@ import (
 
 // nonBattleTypes are PokéAPI types no creature fights with (ADR-0012).
 var nonBattleTypes = map[string]bool{"stellar": true, "unknown": true, "shadow": true}
+
+// ErrNotForBattle marks a PokéAPI document no creature fights with, such as the shadow
+// moves of Colosseum: the import skips it instead of counting it as refused.
+var ErrNotForBattle = errors.New("not used in battle")
 
 // List returns the names of every document of resource ("move", "pokemon-species"…).
 func (c *Client) List(ctx context.Context, resource string) ([]string, error) {
@@ -88,6 +94,11 @@ func (c *Client) Move(ctx context.Context, name string) (catalog.Move, error) {
 	var resp moveResponse
 	if err := c.get(ctx, "move/"+name, &resp); err != nil {
 		return catalog.Move{}, err
+	}
+	// pourquoi : même règle que pour les types : une attaque d'un type hors combat ne
+	// pourquoi : pourrait viser aucune créature.
+	if nonBattleTypes[resp.Type.Name] {
+		return catalog.Move{}, fmt.Errorf("move %s of type %s: %w", name, resp.Type.Name, ErrNotForBattle)
 	}
 
 	// pourquoi : aucune validation ici : c'est le travail de notre API. Une attaque que

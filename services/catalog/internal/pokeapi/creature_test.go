@@ -2,6 +2,7 @@ package pokeapi
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -201,5 +202,21 @@ func TestCreature(t *testing.T) {
 	wantMoves := []catalog.LearnedMove{{MoveID: "ember", LearnMethod: catalog.LevelUp, Level: 7}}
 	if !reflect.DeepEqual(pool.Moves, wantMoves) {
 		t.Errorf("Creature() movepool = %+v, want %+v", pool.Moves, wantMoves)
+	}
+}
+
+func TestMoveNotForBattle(t *testing.T) {
+	dir := t.TempDir()
+	c, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCache(t, dir, "move/dark-gust", `{
+		"name": "dark-gust", "type": {"name": "shadow"}, "damage_class": {"name": "physical"},
+		"power": 50, "accuracy": 100, "pp": null
+	}`)
+
+	if _, err := c.Move(context.Background(), "dark-gust"); !errors.Is(err, ErrNotForBattle) {
+		t.Errorf("Move() error = %v, want ErrNotForBattle", err)
 	}
 }
